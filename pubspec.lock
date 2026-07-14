@@ -365,7 +365,7 @@ packages:
     description:
       path: "."
       ref: HEAD
-      resolved-ref: "7fef4c7a6399903327da997340f35daeccc25a30"
+      resolved-ref: b6ba13df2faef52ddbb6dde0e655a03d8414ca44
       url: "https://github.com/craftindikabiz/live-connect-flutter-chat-widget.git"
     source: git
     version: "1.0.10+1"
