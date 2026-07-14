@@ -8,43 +8,39 @@ import 'package:liveconnect_flutter/models/visitor_profile.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:test_chat_widget/firebase_options.dart';
 
+const String _liveConnectWidgetKey = '6c313c1f-806f-4f8b-9a01-e8337e615935';
+
+VisitorProfile get _visitorProfile => VisitorProfile(
+  name: 'Jacky',
+  email: 'jacky@example.com',
+  phone: '+14155552671',
+);
+
+LiveConnectTheme get _liveConnectTheme => LiveConnectTheme(
+  primaryColor: Colors.blue,
+  headerBackgroundColor: Colors.blue.shade700,
+  headerTitleColor: Colors.white,
+);
+
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final title = message.notification?.title ?? '(no title)';
   debugPrint('background message: $title');
 }
 
-Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-  await requestNotificationPermission();
-
+Future<void> _initLiveConnect() async {
   await LiveConnectChat.init(
-    widgetKey: '6c313c1f-806f-4f8b-9a01-e8337e615935',
-    visitorDetails: VisitorProfile(
-      name: 'Jacky',
-      email: 'jacky@example.com',
-      phone: '+14155552671',
-    ),
-    theme: LiveConnectTheme(
-      primaryColor: Colors.blue,
-      headerBackgroundColor: Colors.blue.shade700,
-      headerTitleColor: Colors.white,
-    ),
+    widgetKey: _liveConnectWidgetKey,
+    visitorDetails: _visitorProfile,
+    theme: _liveConnectTheme,
   );
 
-  // Get and register initial FCM token
   final fcmToken = await FirebaseMessaging.instance.getToken();
   debugPrint('FCM token: $fcmToken');
 
   if (fcmToken != null) {
     LiveConnectChat.setFcmToken(fcmToken);
   }
-
-  runApp(const MyApp());
 }
 
 Future<void> requestNotificationPermission() async {
@@ -58,6 +54,20 @@ Future<void> requestNotificationPermission() async {
   }
 }
 
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
+  await requestNotificationPermission();
+
+  // Init once, here. No need to repeat this anywhere else.
+  await _initLiveConnect();
+
+  runApp(const MyApp());
+}
+
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
@@ -66,41 +76,40 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
+  // Opens the chat widget once the first frame has been drawn, so the
+  // Navigator/Overlay behind LiveConnectChat.navigatorKey is guaranteed to
+  // be mounted. Used for both the cold-start and background-tap paths.
 
   void setupNotifications() {
-    // Listen for token refresh
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-      debugPrint('FCM token refreshed: $newToken');
       LiveConnectChat.setFcmToken(newToken);
     });
 
-    // Handle messages in foreground
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      final title = message.notification?.title ?? '(no title)';
-      final body = message.notification?.body ?? message.data.toString();
-      debugPrint('foreground message: $title');
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(body)),
+      final ctx = LiveConnectChat.navigatorKey.currentContext;
+      if (ctx != null && ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text(message.notification?.body ?? message.data.toString())),
         );
       }
     });
 
-    // Handle notification tap (when app is in background)
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      final title = message.notification?.title ?? '(no title)';
-      debugPrint('notification opened: $title');
-      if (mounted) {
-        LiveConnectChat.show(context);
-      }
+      debugPrint('notification opened: ${message.notification?.title}');
+      LiveConnectChat.showFromNotification();
+    });
+
+    FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
+      debugPrint('getInitialMessage() returned: $message');
+      if (message == null) return;
+      LiveConnectChat.showFromNotification();
     });
   }
 
   @override
   void initState() {
-    setupNotifications();
     super.initState();
+    setupNotifications();
   }
 
   @override
@@ -109,6 +118,7 @@ class _MyAppState extends State<MyApp> {
         LiveConnectChat.currentTheme.floatingActionButtonLocation;
 
     return MaterialApp(
+      navigatorKey: LiveConnectChat.navigatorKey,
       home: Scaffold(
         floatingActionButton: LiveConnectFloatingButton(
           backgroundColor: const Color(0xFF4F46E5),
@@ -119,4 +129,3 @@ class _MyAppState extends State<MyApp> {
     );
   }
 }
-
