@@ -22,10 +22,23 @@ LiveConnectTheme get _liveConnectTheme => LiveConnectTheme(
   headerTitleColor: Colors.white,
 );
 
+// Runs in its own background isolate (no access to the main isolate's
+// widget tree or in-memory state) whenever a push arrives while the app is
+// backgrounded or fully closed. We only use it to bump the persisted
+// unread-count badge — LiveConnectChat.registerIncomingPush() writes
+// straight to SharedPreferences, so it works from here safely.
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Required in a background isolate before touching any plugin channel
+  // (SharedPreferences included).
+  WidgetsFlutterBinding.ensureInitialized();
+
   final title = message.notification?.title ?? '(no title)';
   debugPrint('background message: $title');
+
+  await LiveConnectChat.registerIncomingPush(
+    ticketId: message.data['ticketId'],
+  );
 }
 
 Future<void> _initLiveConnect() async {
@@ -76,15 +89,14 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> {
-  // Opens the chat widget once the first frame has been drawn, so the
-  // Navigator/Overlay behind LiveConnectChat.navigatorKey is guaranteed to
-  // be mounted. Used for both the cold-start and background-tap paths.
-
   void setupNotifications() {
     FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
       LiveConnectChat.setFcmToken(newToken);
     });
 
+    // Foreground message: show an in-app alert and bump the unread badge.
+    // (Opening chat from a tap already clears the badge, so we only do this
+    // for messages the visitor hasn't acted on yet.)
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       final ctx = LiveConnectChat.navigatorKey.currentContext;
       if (ctx != null && ctx.mounted) {
@@ -92,13 +104,19 @@ class _MyAppState extends State<MyApp> {
           SnackBar(content: Text(message.notification?.body ?? message.data.toString())),
         );
       }
+
+      LiveConnectChat.registerIncomingPush(ticketId: message.data['ticketId']);
     });
 
+    // App was in the background, opened via notification tap.
+    // showFromNotification() already clears the unread badge when it opens
+    // the chat screen — don't call registerIncomingPush here.
     FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
       debugPrint('notification opened: ${message.notification?.title}');
       LiveConnectChat.showFromNotification();
     });
 
+    // App was fully closed (terminated), opened via notification tap.
     FirebaseMessaging.instance.getInitialMessage().then((RemoteMessage? message) {
       debugPrint('getInitialMessage() returned: $message');
       if (message == null) return;
@@ -120,11 +138,74 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       navigatorKey: LiveConnectChat.navigatorKey,
       home: Scaffold(
+        // FAB already shows the unread badge automatically — nothing to add.
         floatingActionButton: LiveConnectFloatingButton(
           backgroundColor: const Color(0xFF4F46E5),
           tooltip: 'Open Chat',
         ),
         floatingActionButtonLocation: fabLocation,
+        body: const Center(child: _CenterChatButton()),
+      ),
+    );
+  }
+}
+
+/// A second "Open Chat" entry point in the middle of the screen, with its
+/// own unread badge — separate from the FAB but reading the same
+/// [LiveConnectChat.totalUnreadCount] notifier, so both stay in sync.
+class _CenterChatButton extends StatelessWidget {
+  const _CenterChatButton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: LiveConnectChat.totalUnreadCount,
+      builder: (context, unreadCount, button) {
+        debugPrint("Unread Count $unreadCount");
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            button!,
+            if (unreadCount > 0)
+              Positioned(
+                top: -6,
+                right: -6,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.red,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
+                  child: Center(
+                    child: Text(
+                      unreadCount > 99 ? '99+' : '$unreadCount',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+      // Built once and reused across rebuilds via the `child` parameter.
+      child: ElevatedButton.icon(
+        onPressed: () => LiveConnectChat.show(context),
+        icon: const Icon(Icons.chat_bubble_outline),
+        label: const Text('Open Chat'),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF4F46E5),
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
       ),
     );
   }
